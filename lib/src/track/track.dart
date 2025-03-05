@@ -15,6 +15,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 import 'package:meta/meta.dart';
 import 'package:uuid/uuid.dart';
@@ -60,10 +61,8 @@ abstract class Track extends DisposableChangeNotifier
 
   rtc.RTCRtpReceiver? receiver;
 
-  final bool? enableVisualizer;
-
   Track(this.kind, this.source, this._mediaStream, this._mediaStreamTrack,
-      {this.receiver, this.enableVisualizer}) {
+      {this.receiver}) {
     // Any event emitted will trigger ChangeNotifier
     events.listen((event) {
       logger.finer('[TrackEvent] $event, will notifyListeners()');
