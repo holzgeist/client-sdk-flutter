@@ -68,6 +68,8 @@ class VideoTrackRenderer extends StatefulWidget {
   /// wrap the video view in a Center widget (if [fit] is [VideoViewFit.contain])
   final bool autoCenter;
 
+  final void Function(Size)? onResize;
+
   const VideoTrackRenderer(
     this.track, {
     this.fit = VideoViewFit.contain,
@@ -76,6 +78,7 @@ class VideoTrackRenderer extends StatefulWidget {
     this.autoDisposeRenderer = true,
     this.cachedRenderer,
     this.autoCenter = true,
+    this.onResize,
     Key? key,
   }) : super(key: key);
 
@@ -173,6 +176,17 @@ class _VideoTrackRendererState extends State<VideoTrackRenderer> {
         setState(() {});
       });
     _renderer?.onResize = () {
+      final videoValue = (_renderer as ValueNotifier<rtc.RTCVideoValue>).value;
+      final double width;
+      final double height;
+      if (videoValue.rotation % 180 == 0) {
+        width = videoValue.width;
+        height = videoValue.height;
+      } else {
+        width = videoValue.height;
+        height = videoValue.width;
+      }
+      widget.onResize?.call(Size(width, height));
       if (mounted) {
         setState(() {
           _aspectRatio = (_renderer as rtc.RTCVideoRenderer?)?.videoValue.aspectRatio;
