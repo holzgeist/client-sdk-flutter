@@ -81,10 +81,10 @@ class E2EEManager {
         })
         ..on<TrackSubscribedEvent>((event) async {
           final codec = event.publication.mimeType.split('/')[1];
-          if (event.publication.encryptionType == EncryptionType.kNone || isAV1Codec(codec)) {
-            // no need to setup frame cryptor
-            return;
-          }
+          // if (event.publication.encryptionType == EncryptionType.kNone || isAV1Codec(codec)) {
+          //   // no need to setup frame cryptor
+          //   return;
+          // }
           final frameCryptor = await _addRtpReceiver(
             receiver: event.track.receiver!,
             identity: event.participant.identity,
