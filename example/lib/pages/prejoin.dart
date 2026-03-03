@@ -264,6 +264,9 @@ class _PreJoinPageState extends State<PreJoinPage> {
           camera: TrackOption(track: _videoTrack),
         ),
       );
+      if (room.e2eeManager != null) {
+        await room.setE2EEEnabled(false);
+      }
 
       if (!context.mounted) return;
       await Navigator.push<void>(
