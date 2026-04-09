@@ -68,8 +68,7 @@ enum ChangeKind {
   security,
   deprecated,
   removed,
-  docs,
-  chore;
+  docs;
 
   static ChangeKind? fromString(String value) {
     return ChangeKind.values.where((e) => e.name == value).firstOrNull;
@@ -220,7 +219,6 @@ String generateChangelogEntry(SemanticVersion version, List<Change> changes) {
         ChangeKind.deprecated => 'Deprecated',
         ChangeKind.removed => 'Removed',
         ChangeKind.docs => 'Docs',
-        ChangeKind.chore => 'Chore',
       };
 
   for (final kind in ChangeKind.values) {
