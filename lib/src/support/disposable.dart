@@ -38,16 +38,17 @@ mixin _Disposer {
       logger.finer('[${objectId}] dispose()');
       _isDisposed = true;
       if (_disposeFuncs.isNotEmpty) {
-        logger.finer('[$objectId] running ${_disposeFuncs.length} dispose funcs...');
+        final disposeFuncs = _disposeFuncs.toList(growable: false);
+        _disposeFuncs.clear();
+        logger.finer('[$objectId] running ${disposeFuncs.length} dispose funcs...');
         // call dispose funcs in reverse order
-        for (final disposeFunc in _disposeFuncs.reversed) {
+        for (final disposeFunc in disposeFuncs.reversed) {
           try {
             await disposeFunc();
           } catch (e, stack) {
             logger.warning('[$objectId] error during dispose: $e', e, stack);
           }
         }
-        _disposeFuncs.clear();
         logger.finer('[$objectId] dispose complete.');
       }
       return true;
