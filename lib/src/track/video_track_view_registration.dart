@@ -12,24 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import 'key_provider.dart';
+import 'package:flutter/material.dart';
 
-enum EncryptionType {
-  kNone,
-  kGcm,
-  kCustom,
-}
+import 'package:meta/meta.dart';
 
-class E2EEOptions {
-  final BaseKeyProvider keyProvider;
-  final EncryptionType encryptionType = EncryptionType.kGcm;
-  const E2EEOptions({required this.keyProvider});
+import '../types/other.dart';
 
-  /// Creates [E2EEOptions] configured with a shared-key [BaseKeyProvider]
-  /// derived from the given passphrase.
-  static Future<E2EEOptions> sharedKey(String key) async {
-    final keyProvider = await BaseKeyProvider.create();
-    await keyProvider.setSharedKey(key);
-    return E2EEOptions(keyProvider: keyProvider);
-  }
+@internal
+class VideoTrackViewRegistration {
+  /// The widget key used by adaptive stream to find this view's render context.
+  final GlobalKey key = GlobalKey();
+
+  /// The pixel density used to convert this view's logical size to physical
+  /// pixels when computing adaptive-stream dimensions.
+  AdaptiveStreamPixelDensity pixelDensity;
+
+  VideoTrackViewRegistration({
+    this.pixelDensity = AdaptiveStreamPixelDensity.auto,
+  });
 }
