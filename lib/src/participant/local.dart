@@ -1159,14 +1159,6 @@ extension RPCMethods on LocalParticipant {
             .clamp(minEffectiveTimeout.inMilliseconds, double.infinity)
             .toInt(),
       );
-      await publishRpcRequest(
-        destinationIdentity: params.destinationIdentity,
-        requestId: requestId,
-        method: params.method,
-        payload: params.payload,
-        responseTimeout: effectiveTimeout,
-        version: kRpcVesion,
-      );
 
       final ackTimer = Timer(maxRoundTripLatency, () {
         completer.completeError(RpcError.builtIn(RpcError.connectionTimeout));
@@ -1192,6 +1184,15 @@ extension RPCMethods on LocalParticipant {
         ackTimer.cancel();
         _pendingAcks.remove(requestId);
       };
+
+      await publishRpcRequest(
+        destinationIdentity: params.destinationIdentity,
+        requestId: requestId,
+        method: params.method,
+        payload: params.payload,
+        responseTimeout: effectiveTimeout,
+        version: kRpcVesion,
+      );
     } catch (e) {
       if (!completer.isCompleted) {
         completer.completeError(e);
