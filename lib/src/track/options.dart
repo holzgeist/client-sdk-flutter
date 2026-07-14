@@ -54,6 +54,19 @@ class CameraCaptureOptions extends VideoCaptureOptions {
   /// The exposure mode to use for the camera.
   final CameraExposureMode exposureMode;
 
+  @override
+  bool operator ==(Object other) {
+    return other is CameraCaptureOptions &&
+        super == other &&
+        cameraPosition == other.cameraPosition &&
+        stopCameraCaptureOnMute == other.stopCameraCaptureOnMute &&
+        focusMode == other.focusMode &&
+        exposureMode == other.exposureMode;
+  }
+
+  @override
+  int get hashCode => Object.hash(super.hashCode, cameraPosition, stopCameraCaptureOnMute, focusMode, exposureMode);
+
   const CameraCaptureOptions({
     this.cameraPosition = CameraPosition.front,
     this.focusMode = CameraFocusMode.auto,
@@ -240,6 +253,18 @@ abstract class VideoCaptureOptions extends LocalTrackOptions {
 
   @override
   Map<String, dynamic> toMediaConstraintsMap() => params.toMediaConstraintsMap();
+
+  @override
+  bool operator ==(Object other) {
+    return other is VideoCaptureOptions &&
+        params == other.params &&
+        deviceId == other.deviceId &&
+        maxFrameRate == other.maxFrameRate &&
+        processor == other.processor;
+  }
+
+  @override
+  int get hashCode => Object.hash(params, deviceId, maxFrameRate, processor);
 }
 
 /// Options used when creating a [LocalAudioTrack].
