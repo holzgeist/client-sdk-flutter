@@ -111,6 +111,12 @@ class Room extends DisposableChangeNotifier with EventsEmittable<RoomEvent> {
 
   lk_models.Room? _roomInfo;
 
+  // Pending getSid() waiters, completed with '' at disposal so a Room.dispose
+  // without a disconnect event can't leave them hanging. Tracked as a field
+  // (and drained by the constructor's dispose routine) so repeated getSid()
+  // calls don't accumulate per-call onDispose closures.
+  final Set<Completer<String>> _pendingSidCompleters = {};
+
   /// a list of participants that are actively speaking, including local participant.
   UnmodifiableListView<Participant> get activeSpeakers => UnmodifiableListView<Participant>(_activeSpeakers);
   List<Participant> _activeSpeakers = [];
@@ -203,6 +209,13 @@ class Room extends DisposableChangeNotifier with EventsEmittable<RoomEvent> {
     preConnectAudioBuffer = PreConnectAudioBuffer(this);
 
     onDispose(() async {
+      // complete pending getSid() waiters so they don't hang on teardown
+      for (final completer in _pendingSidCompleters) {
+        if (!completer.isCompleted) {
+          completer.complete('');
+        }
+      }
+      _pendingSidCompleters.clear();
       // clean up routine
       await _cleanUp();
       // reject any in-flight RPC calls
@@ -261,21 +274,26 @@ class Room extends DisposableChangeNotifier with EventsEmittable<RoomEvent> {
     @Deprecated('deprecated, please use roomOptions in Room constructor') RoomOptions? roomOptions,
     FastConnectOptions? fastConnectOptions,
   }) async {
-    var roomOptions = this.roomOptions;
-    if (lkPlatformIs(PlatformType.web) && (roomOptions.networkOptions.certificatePinning?.isEnabled ?? false)) {
+    var effectiveRoomOptions = roomOptions ?? this.roomOptions;
+    if (lkPlatformIs(PlatformType.web) &&
+        (effectiveRoomOptions.networkOptions.certificatePinning?.isEnabled ?? false)) {
       throw UnsupportedError('Certificate pinning is not supported on Flutter web, '
           'remove certificatePinning from NetworkOptions when targeting web');
     }
     connectOptions ??= ConnectOptions();
     _pendingTrackQueue.updateTtl(connectOptions.timeouts.subscribe);
     // ignore: deprecated_member_use_from_same_package
-    if ((roomOptions.encryption != null || roomOptions.e2eeOptions != null) && engine.e2eeManager == null) {
+    if ((effectiveRoomOptions.encryption != null || effectiveRoomOptions.e2eeOptions != null) &&
+        engine.e2eeManager == null) {
       if (!lkPlatformSupportsE2EE()) {
         throw LiveKitE2EEException('E2EE is not supported on this platform');
       }
       // ignore: deprecated_member_use_from_same_package
-      final e2eeOptions = roomOptions.encryption ?? roomOptions.e2eeOptions;
-      _e2eeManager = E2EEManager(e2eeOptions!.keyProvider, dcEncryptionEnabled: roomOptions.encryption != null);
+      final e2eeOptions = effectiveRoomOptions.encryption ?? effectiveRoomOptions.e2eeOptions;
+      _e2eeManager = E2EEManager(
+        e2eeOptions!.keyProvider,
+        dcEncryptionEnabled: effectiveRoomOptions.encryption != null,
+      );
       await _e2eeManager!.setup(this);
       engine.setE2eeManager(_e2eeManager);
     } else {
@@ -284,8 +302,8 @@ class Room extends DisposableChangeNotifier with EventsEmittable<RoomEvent> {
 
     if (_e2eeManager != null) {
       // Disable backup codec when e2ee is enabled
-      roomOptions = roomOptions.copyWith(
-        defaultVideoPublishOptions: roomOptions.defaultVideoPublishOptions.copyWith(
+      effectiveRoomOptions = effectiveRoomOptions.copyWith(
+        defaultVideoPublishOptions: effectiveRoomOptions.defaultVideoPublishOptions.copyWith(
           backupVideoCodec: const BackupVideoCodec(enabled: false),
         ),
       );
@@ -297,7 +315,11 @@ class Room extends DisposableChangeNotifier with EventsEmittable<RoomEvent> {
     }
     if (isCloudUrl(Uri.parse(url))) {
       if (_regionUrlProvider == null) {
-        _regionUrlProvider = RegionUrlProvider(url: url, token: token, networkOptions: roomOptions.networkOptions);
+        _regionUrlProvider = RegionUrlProvider(
+          url: url,
+          token: token,
+          networkOptions: effectiveRoomOptions.networkOptions,
+        );
       } else {
         _regionUrlProvider?.updateToken(token);
       }
@@ -315,7 +337,7 @@ class Room extends DisposableChangeNotifier with EventsEmittable<RoomEvent> {
     // AudioManager once, on the first connect. Skipping it on a later manual
     // connect of the same Room keeps a runtime speaker change from being
     // reverted. New code should call setSpeakerOutputPreferred directly.
-    final legacySpeakerOn = roomOptions.defaultAudioOutputOptions.speakerOn;
+    final legacySpeakerOn = effectiveRoomOptions.defaultAudioOutputOptions.speakerOn;
     if (legacySpeakerOn != null && !_legacySpeakerBridged && lkPlatformIsMobile()) {
       _legacySpeakerBridged = true;
       await AudioManager.instance.setSpeakerOutputPreferred(legacySpeakerOn);
@@ -330,7 +352,7 @@ class Room extends DisposableChangeNotifier with EventsEmittable<RoomEvent> {
         _regionUrl ?? url,
         token,
         connectOptions: connectOptions,
-        roomOptions: roomOptions,
+        roomOptions: effectiveRoomOptions,
         fastConnectOptions: fastConnectOptions,
         regionUrlProvider: _regionUrlProvider,
       );
@@ -353,7 +375,7 @@ class Room extends DisposableChangeNotifier with EventsEmittable<RoomEvent> {
             nextUrl,
             token,
             connectOptions: connectOptions,
-            roomOptions: roomOptions,
+            roomOptions: effectiveRoomOptions,
             fastConnectOptions: fastConnectOptions,
             regionUrlProvider: _regionUrlProvider,
           );
@@ -1103,19 +1125,52 @@ extension RoomPrivateMethods on Room {
 
     final completer = Completer<String>();
 
-    events.on<SignalRoomUpdateEvent>((event) {
+    // SignalRoomUpdateEvent is emitted on the signal client's emitter (and
+    // consumed by _setUpSignalListeners) — it never appears on the Room's
+    // [events], so listen where it actually fires or the future returned
+    // here never completes. Created via createListener() so it is cancelled
+    // with its owner.
+    final roomUpdateListener = engine.signalClient.createListener();
+    roomUpdateListener.on<SignalRoomUpdateEvent>((event) {
       if (event.room.sid.isNotEmpty && !completer.isCompleted) {
         completer.complete(event.room.sid);
       }
     });
 
-    events.once<RoomDisconnectedEvent>((event) {
+    // A caller waiting while the connection is still being established: the
+    // sid may arrive inside the JoinResponse, which is applied via
+    // EngineJoinResponseEvent without a SignalRoomUpdateEvent.
+    final joinListener = engine.createListener();
+    joinListener.on<EngineJoinResponseEvent>((event) {
+      if (event.response.room.sid.isNotEmpty && !completer.isCompleted) {
+        completer.complete(event.response.room.sid);
+      }
+    });
+
+    final cancelDisconnectListen = events.once<RoomDisconnectedEvent>((event) {
       if (!completer.isCompleted) {
         completer.complete('');
       }
     });
 
-    return completer.future;
+    // Disposal without a disconnect event (Room.dispose during teardown)
+    // cancels the listeners above — the constructor's dispose routine
+    // completes every tracked waiter with '' instead of leaving the returned
+    // future pending forever.
+    _pendingSidCompleters.add(completer);
+
+    // The update may have been applied between the check above and the
+    // listener registration.
+    if (_roomInfo != null && _roomInfo!.sid.isNotEmpty && !completer.isCompleted) {
+      completer.complete(_roomInfo!.sid);
+    }
+
+    return completer.future.whenComplete(() async {
+      _pendingSidCompleters.remove(completer);
+      await roomUpdateListener.dispose();
+      await joinListener.dispose();
+      await cancelDisconnectListen?.call();
+    });
   }
 }
 

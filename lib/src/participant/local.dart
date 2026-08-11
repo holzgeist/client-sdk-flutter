@@ -196,15 +196,15 @@ class LocalParticipant extends Participant<LocalTrackPublication> {
         if (publishOptions.preConnect) lk_models.AudioTrackFeature.TF_PRECONNECT_BUFFER,
       ]);
 
-      Future<lk_models.TrackInfo> negotiate() async {
-        track.transceiver = await room.engine.createTransceiverRTCRtpSender(track, publishOptions!, encodings);
+      Future<lk_models.TrackInfo> negotiate(AudioPublishOptions options) async {
+        track.transceiver = await room.engine.createTransceiverRTCRtpSender(track, options, encodings);
         await room.engine.negotiate();
         return lk_models.TrackInfo();
       }
 
       late lk_models.TrackInfo trackInfo;
       if (room.engine.enabledPublishCodecs?.isNotEmpty ?? false) {
-        final rets = await Future.wait<lk_models.TrackInfo>([room.engine.addTrack(req), negotiate()]);
+        final rets = await Future.wait<lk_models.TrackInfo>([room.engine.addTrack(req), negotiate(publishOptions)]);
         trackInfo = rets[0];
       } else {
         trackInfo = await room.engine.addTrack(req);
@@ -378,31 +378,30 @@ class LocalParticipant extends Participant<LocalTrackPublication> {
 
     logger.fine('Video layers: ${layers.map((e) => e)}');
 
-    Future<lk_models.TrackInfo> negotiate() async {
-      track.transceiver = await room.engine.createTransceiverRTCRtpSender(track, publishOptions!, encodings);
+    Future<lk_models.TrackInfo> negotiate(VideoPublishOptions options) async {
+      track.transceiver = await room.engine.createTransceiverRTCRtpSender(track, options, encodings);
 
-      track.codec = publishOptions.videoCodec;
+      track.codec = options.videoCodec;
       if (lkBrowser() != BrowserType.firefox) {
         await room.engine.setPreferredCodec(
           track.transceiver!,
           'video',
-          publishOptions.videoCodec,
+          options.videoCodec,
         );
       }
 
-      if ([TrackSource.camera, TrackSource.screenShareVideo].contains(track.source)) {
-        final degradationPreference = publishOptions.degradationPreference ?? DegradationPreference.maintainResolution;
-        await track.setDegradationPreference(degradationPreference);
-      }
+      await track.setDegradationPreference(
+        options.degradationPreference ?? getDefaultDegradationPreference(track.source),
+      );
 
       if (kIsWeb && lkBrowser() == BrowserType.firefox && track.kind == TrackType.AUDIO) {
         //TOOD:
-      } else if (isVideoCodec(publishOptions.videoCodec) && encodings?.first.maxBitrate != null) {
+      } else if (isVideoCodec(options.videoCodec) && encodings?.first.maxBitrate != null) {
         // Apply start bitrate for all video codecs to prevent initial blurriness
         room.engine.publisher?.setTrackBitrateInfo(TrackBitrateInfo(
             cid: track.getCid(),
             transceiver: track.transceiver,
-            codec: publishOptions.videoCodec,
+            codec: options.videoCodec,
             maxbr: encodings![0].maxBitrate! ~/ 1000));
       }
 
@@ -438,7 +437,7 @@ class LocalParticipant extends Participant<LocalTrackPublication> {
     }
     late lk_models.TrackInfo trackInfo;
     if (room.engine.enabledPublishCodecs?.isNotEmpty ?? false) {
-      final rets = await Future.wait<lk_models.TrackInfo>([room.engine.addTrack(req), negotiate()]);
+      final rets = await Future.wait<lk_models.TrackInfo>([room.engine.addTrack(req), negotiate(publishOptions)]);
       trackInfo = rets[0];
     } else {
       trackInfo = await room.engine.addTrack(req);
@@ -489,10 +488,9 @@ class LocalParticipant extends Participant<LocalTrackPublication> {
         );
       }
 
-      if ([TrackSource.camera, TrackSource.screenShareVideo].contains(track.source)) {
-        final degradationPreference = publishOptions.degradationPreference ?? DegradationPreference.maintainResolution;
-        await track.setDegradationPreference(degradationPreference);
-      }
+      await track.setDegradationPreference(
+        publishOptions.degradationPreference ?? getDefaultDegradationPreference(track.source),
+      );
 
       if (kIsWeb && lkBrowser() == BrowserType.firefox && track.kind == TrackType.AUDIO) {
         //TOOD:
@@ -554,23 +552,41 @@ class LocalParticipant extends Participant<LocalTrackPublication> {
       }
 
       final sender = track.transceiver?.sender;
+      var didRemoveSender = false;
       if (sender != null) {
         try {
           await room.engine.publisher?.pc.removeTrack(sender);
-          if (track is LocalVideoTrack) {
-            track.simulcastCodecs.forEach((key, simulcastTrack) async {
-              await room.engine.publisher?.pc.removeTrack(simulcastTrack.sender!);
-            });
-          }
         } catch (e) {
           logger.warning('[$objectId] rtc.removeTrack() did throw $e');
         }
+        didRemoveSender = true;
+      }
 
-        // doesn't make sense to negotiate if already disposed
-        if (!isDisposed) {
-          // manual negotiation since track changed
-          await room.engine.negotiate();
+      // not gated on the primary sender, stale backup codec state must not
+      // survive unpublish even when the track never got a live sender
+      if (track is LocalVideoTrack) {
+        // remove each backup sender on its own, one failure should not
+        // prevent removal of the others
+        for (final simulcastTrack in track.simulcastCodecs.values.toList()) {
+          final simulcastSender = simulcastTrack.sender;
+          if (simulcastSender == null) {
+            continue;
+          }
+          try {
+            await room.engine.publisher?.pc.removeTrack(simulcastSender);
+          } catch (e) {
+            logger.warning('[$objectId] rtc.removeTrack() did throw $e');
+          }
+          simulcastTrack.sender = null;
+          didRemoveSender = true;
         }
+        track.clearSimulcastState();
+      }
+
+      // doesn't make sense to negotiate if already disposed
+      if (didRemoveSender && !isDisposed) {
+        // manual negotiation since track changed
+        await room.engine.negotiate();
       }
 
       // did unpublish
@@ -607,7 +623,11 @@ class LocalParticipant extends Participant<LocalTrackPublication> {
       if (track.track is LocalAudioTrack) {
         await publishAudioTrack(track.track as LocalAudioTrack);
       } else if (track.track is LocalVideoTrack) {
-        await publishVideoTrack(track.track as LocalVideoTrack);
+        final videoTrack = track.track as LocalVideoTrack;
+        // a full reconnect replaced the peer connection, so any simulcast
+        // codec senders the track still holds belong to the old one
+        videoTrack.clearSimulcastState();
+        await publishVideoTrack(videoTrack);
       }
     }
   }
@@ -944,6 +964,10 @@ class LocalParticipant extends Participant<LocalTrackPublication> {
       backupCodec,
     );
 
+    // the backup codec publishes over its own sender, so it needs the same
+    // degradation preference the primary sender resolved to.
+    await track.applyDegradationPreference(simulcastTrack.sender);
+
     final cid = simulcastTrack.sender!.senderId;
 
     final req = lk_rtc.AddTrackRequest(
@@ -1150,7 +1174,7 @@ extension DataStreamParticipantMethods on LocalParticipant {
     );
 
     final header = lk_models.DataStream_Header(
-      totalLength: Int64(info.size),
+      totalLength: options?.totalSize != null ? Int64(options!.totalSize!) : null,
       mimeType: info.mimeType,
       streamId: streamId,
       topic: options?.topic,
